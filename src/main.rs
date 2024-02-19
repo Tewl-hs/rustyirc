@@ -1,10 +1,15 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
+// Added global variables for easier configuring
+const SERVER_ADDRESS: &str = "irc.koach.com:6667";
+const NICKNAME: &str = "RustyTewl";
+const CHANNEL: &str = "#koachsworkshop";
+
 fn main() -> io::Result<()> {
-    if let Ok(mut stream) = TcpStream::connect("irc.koach.com:6667") {
-        send(&mut stream, "NICK RustyTewl");
-        send(&mut stream, "USER RustyTewl 0 * :RustBot");
+    if let Ok(mut stream) = TcpStream::connect(SERVER_ADDRESS) {
+        send(&mut stream, &format!("NICK {}", NICKNAME));
+        send(&mut stream, &format!("USER {} 0 * :RustBot",NICKNAME));
         println!("Connected!");
         let mut buffer = String::new();
         loop {
@@ -74,9 +79,9 @@ fn on_numeric(stream: &mut TcpStream, numeric: u16, line: &str) {
         println!("Numeric({}): {}", padded_numeric, message);
     }
     match &padded_numeric[..] {
-        "001" => send(stream, "JOIN #koachsworkshop"),
+        "001" => send(stream, &format!("JOIN {}",CHANNEL)),
         _ => {
-            // do nothing
+            // do nothing yet
         }
     }
 }
