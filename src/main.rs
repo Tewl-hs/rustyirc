@@ -9,7 +9,7 @@ const CHANNEL: &str = "#koachsworkshop";
 fn main() -> io::Result<()> {
     if let Ok(mut stream) = TcpStream::connect(SERVER_ADDRESS) {
         send(&mut stream, &format!("NICK {}", NICKNAME));
-        send(&mut stream, &format!("USER {} 0 * :RustBot",NICKNAME));
+        send(&mut stream, &format!("USER {} 0 * :RustBot", NICKNAME));
         println!("Connected!");
         let mut buffer = String::new();
         loop {
