@@ -9,7 +9,7 @@ use chrono::prelude::*;
 // Added global variables for easier configuring
 const SERVER_ADDRESS: &str = "irc.koach.com:6667";
 const NICKNAME: &str = "RustyTewl";
-const CHANNEL: &str = "#KoachsWorkShop";
+const CHANNEL: &str = "#tewlzbox";
 
 fn main() -> io::Result<()> {
     if let Ok(mut stream) = TcpStream::connect(SERVER_ADDRESS) {
