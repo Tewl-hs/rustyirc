@@ -4,7 +4,7 @@ use std::net::TcpStream;
 // Added global variables for easier configuring
 const SERVER_ADDRESS: &str = "irc.koach.com:6667";
 const NICKNAME: &str = "RustyTewl";
-const CHANNEL: &str = "#koachsworkshop";
+const CHANNEL: &str = "#KoachsWorkShop";
 
 fn main() -> io::Result<()> {
     if let Ok(mut stream) = TcpStream::connect(SERVER_ADDRESS) {
@@ -29,12 +29,12 @@ fn main() -> io::Result<()> {
 fn send(stream: &mut TcpStream, text: &str) {
     let text = format!("{}\n", text);
     stream.write(text.as_bytes()).unwrap();
-    print!("{}", text);
+    //print!("{}", text);
 }
 
 fn parse(stream: &mut TcpStream, buffer: &mut String) {
     while let Some(pos) = buffer.find('\n') {
-        let line = buffer[..pos].trim_end_matches('\r').trim_end_matches('\n');
+        let line = buffer[..pos].trim_end_matches('\n');
         if line.is_empty() {
             buffer.clear();
             break;
@@ -46,12 +46,12 @@ fn parse(stream: &mut TcpStream, buffer: &mut String) {
 
 fn handle_line(stream: &mut TcpStream, line: &str) {
     if line.starts_with("PING") {
-        println!("{}", line);
+        //println!("{}", line);
         let pong_msg = line.replace("PING", "PONG");
         send(stream, &pong_msg);
         return;
     }
-    let parts: Vec<&str> = line.split_whitespace().collect();
+    let parts: Vec<&str> = line.split(' ').collect();
     if parts.len() >= 2 {
         match parts[1] {
             "JOIN" => on_join(stream, line),
@@ -60,6 +60,7 @@ fn handle_line(stream: &mut TcpStream, line: &str) {
             "QUIT" => on_quit(stream, line),
             "NOTICE" => on_notice(stream, line),
             "MODE" => on_mode(stream, line),
+            "KICK" => on_kick(stream, line),
             _ => {
                 if let Ok(numeric) = parts[1].parse::<u16>() {
                     on_numeric(stream, numeric, line);
@@ -85,51 +86,105 @@ fn on_numeric(stream: &mut TcpStream, numeric: u16, line: &str) {
         }
     }
 }
-
+// :NICK!USER@ADDRESS JOIN :<CHANNEL>
 fn on_join(_stream: &mut TcpStream, line: &str) {
     let parts: Vec<&str> = line.split(' ').collect();
-    println!("{} joined {}", parts[0], parts[2]);
-}
 
+    let sender = parts[0].split('!').next().unwrap();
+    let sender = &sender[1..];
+
+    let channel = &parts[2][1..];
+
+    println!("{} has joined {}", sender, channel);
+}
+// :NICK!USER@ADDRESS PART :<CHANNEL>
 fn on_part(_stream: &mut TcpStream, line: &str) {
     let parts: Vec<&str> = line.split(' ').collect();
-    println!("{} left {}", parts[0], parts[2]);
+
+    let sender = parts[0].split('!').next().unwrap();
+    let sender = &sender[1..];
+
+    let channel = &parts[2][1..];
+
+    println!("{} has left {}", sender, channel);
 }
-
+// :NICK!USER@ADDRESS PRIVMSG <NICKNAME|CHANNEL> :<MESSAGE>
 fn on_privmsg(_stream: &mut TcpStream, line: &str) {
-    let parts: Vec<&str> = line.split_whitespace().collect();
+    let parts: Vec<&str> = line.split(' ').collect();
     if parts.len() >= 4 {
-        let sender = {
-            let sender_split: Vec<&str> = parts[0].split('!').collect();
-            sender_split.get(0).map_or("", |s| s.trim_start_matches(':'))
-        };
+        let sender = parts[0].split('!').next().unwrap();
+        let sender = &sender[1..];
 
-        let channel = parts.get(2).copied().unwrap_or("");
+        let target = parts[2];
 
         let message_parts = &parts[3..];
         let mut message = message_parts.join(" ");
         message = message.trim_start_matches(':').to_string();
 
-        println!("{} in {}: {}", sender, channel, message);
+        if target == CHANNEL {
+            println!("{}: {}", sender, message);
+        } else {
+            println!("QUERY({}): {}", sender, message);
+        }
     }
 }
-
+// :NICK!USER@ADDRESS QUIT :<MESSAGE>
 fn on_quit(_stream: &mut TcpStream, line: &str) {
-    let parts: Vec<&str> = line.splitn(3, ':').collect();
-    println!("{} quit: {}", parts[0], parts[2]);
-}
+    let parts: Vec<&str> = line.split(' ').collect();
+    println!("{}", line);
+    if parts.len() >= 3 {
+        let sender = parts[0].split('!').next().unwrap();
+        let sender = &sender[1..];
 
-fn on_notice(_stream: &mut TcpStream, line: &str) {
-    let parts: Vec<&str> = line.splitn(4, ':').collect();
-    if parts.len() >= 4 && parts[3].starts_with(':') {
-        let target = parts[2];
-        let message = parts[3].trim_start_matches(':');
-        println!("Notice to {}: {}", target, message);
+        let message_parts = &parts[2..];
+        let mut message = message_parts.join(" ");
+        message = message.trim_start_matches(':').to_string();
+
+        println!("{} has quit: {}", sender, message);
     }
 }
+// :NICK!USER@ADDRESS NOTICE <NICKNAME|CHANNEL> :<MESSAGE>
+fn on_notice(_stream: &mut TcpStream, line: &str) {
+    let parts: Vec<&str> = line.split(' ').collect();
+    if parts.len() >= 3 && parts[3].starts_with(':') {
+        let sender = parts[0].split('!').next().unwrap();
+        let sender = &sender[1..];
 
+        let target = parts[2];
+
+        let message_parts = &parts[3..];
+        let mut message = message_parts.join(" ");
+        message = message.trim_start_matches(':').to_string();
+
+        if target == CHANNEL {
+            println!("CNOTICE({}): {}", sender, message);
+        } else {
+            println!("PNOTICE({}): {}", sender, message);
+        }
+    }
+}
+// :NICK!USER@ADDRESS MODE <CHANNEL|NICKNAME> <MODES> <PARAMS>
+// * If there are no params a colon will be appear before <MODES> otherwise a colon will appear before the last <PARAM> in the message 
 fn on_mode(_stream: &mut TcpStream, line: &str) {
     println!("Mode change: {}", line);
+}
+// :NICK!USER@ADDRESS KICK <CHANNEL> <NICK> :<MESSAGE>
+fn on_kick(_stream: &mut TcpStream, line: &str) {
+    let parts: Vec<&str> = line.split(' ').collect();
+    if parts.len() >= 4 && parts[4].starts_with(':') {
+        let sender = parts[0].split('!').next().unwrap();
+        let sender = &sender[1..];
+
+        let channel = parts[2];
+
+        let target = parts[3];
+
+        let message_parts = &parts[4..];
+        let mut message = message_parts.join(" ");
+        message = message.trim_start_matches(':').to_string();
+
+        println!("{} has kicked {} from {} :{}", sender, target, channel, message);
+    }
 }
 
 fn on_other(_stream: &mut TcpStream, line: &str) {
