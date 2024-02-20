@@ -61,6 +61,7 @@ fn handle_line(stream: &mut TcpStream, line: &str) {
             "NOTICE" => on_notice(stream, line),
             "MODE" => on_mode(stream, line),
             "KICK" => on_kick(stream, line),
+            "NICK" => on_nick(stream, line),
             _ => {
                 if let Ok(numeric) = parts[1].parse::<u16>() {
                     on_numeric(stream, numeric, line);
@@ -71,7 +72,8 @@ fn handle_line(stream: &mut TcpStream, line: &str) {
         }
     }
 }
-
+// :SERVER <NUMERIC> <NICK> :<PARAMS>
+// * ':' appears before last <PARAM>
 fn on_numeric(stream: &mut TcpStream, numeric: u16, line: &str) {
     let padded_numeric = format!("{:03}", numeric);
     let parts: Vec<&str> = line.splitn(3, ':').collect();
@@ -108,6 +110,17 @@ fn on_part(_stream: &mut TcpStream, line: &str) {
 
     println!("{} has left {}", sender, channel);
 }
+// :NICK!USER@ADDRESS NICK :<NEWNICK>
+fn on_nick(_stream: &mut TcpStream, line: &str) {
+    let parts: Vec<&str> = line.split(' ').collect();
+
+    let sender = parts[0].split('!').next().unwrap();
+    let sender = &sender[1..];
+
+    let newnick = &parts[2][1..];
+
+    println!("{} has has changed their nick to: {}", sender, newnick);
+}
 // :NICK!USER@ADDRESS PRIVMSG <NICKNAME|CHANNEL> :<MESSAGE>
 fn on_privmsg(_stream: &mut TcpStream, line: &str) {
     let parts: Vec<&str> = line.split(' ').collect();
@@ -131,7 +144,6 @@ fn on_privmsg(_stream: &mut TcpStream, line: &str) {
 // :NICK!USER@ADDRESS QUIT :<MESSAGE>
 fn on_quit(_stream: &mut TcpStream, line: &str) {
     let parts: Vec<&str> = line.split(' ').collect();
-    println!("{}", line);
     if parts.len() >= 3 {
         let sender = parts[0].split('!').next().unwrap();
         let sender = &sender[1..];
