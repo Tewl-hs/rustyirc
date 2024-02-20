@@ -1,5 +1,10 @@
+extern crate colored;
+
+use colored::*;
+
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use chrono::prelude::*;
 
 // Added global variables for easier configuring
 const SERVER_ADDRESS: &str = "irc.koach.com:6667";
@@ -10,7 +15,7 @@ fn main() -> io::Result<()> {
     if let Ok(mut stream) = TcpStream::connect(SERVER_ADDRESS) {
         send(&mut stream, &format!("NICK {}", NICKNAME));
         send(&mut stream, &format!("USER {} 0 * :RustBot", NICKNAME));
-        println!("Connected!");
+        printall("yellow", "Connected!");
         let mut buffer = String::new();
         loop {
             let mut read_buffer = [0; 4096];
@@ -29,7 +34,26 @@ fn main() -> io::Result<()> {
 fn send(stream: &mut TcpStream, text: &str) {
     let text = format!("{}\n", text);
     stream.write(text.as_bytes()).unwrap();
-    //print!("{}", text);
+    //printall(&format!("{}", text));
+}
+
+fn printall(clr: &str, text: &str) {
+    let now = Local::now();
+    let timestamp = now.format("[%H:%M:%S]").to_string();
+    match clr {
+        "yellow" => println!("{} {}",timestamp, text.yellow()),
+        "red" => println!("{} {}",timestamp, text.red()),
+        "green" => println!("{} {}",timestamp, text.green()),
+        "purple" => println!("{} {}",timestamp, text.purple()),
+        "blue" => println!("{} {}",timestamp, text.blue()),
+        "cyan" => println!("{} {}",timestamp, text.cyan()),
+        "magenta" => println!("{} {}",timestamp, text.magenta()),
+        "brightblue" => println!("{} {}",timestamp, text.bright_blue()),
+        "brightgreen" => println!("{} {}",timestamp, text.bright_green()),
+        "brightred" => println!("{} {}",timestamp, text.bright_red()),
+        "brightcyan" => println!("{} {}",timestamp, text.bright_cyan()),
+        _ => println!("{} {}",timestamp, text)
+    }
 }
 
 fn parse(stream: &mut TcpStream, buffer: &mut String) {
@@ -46,7 +70,7 @@ fn parse(stream: &mut TcpStream, buffer: &mut String) {
 
 fn handle_line(stream: &mut TcpStream, line: &str) {
     if line.starts_with("PING") {
-        //println!("{}", line);
+        //printall(&format!("{}", line));
         let pong_msg = line.replace("PING", "PONG");
         send(stream, &pong_msg);
         return;
@@ -76,15 +100,39 @@ fn handle_line(stream: &mut TcpStream, line: &str) {
 // * ':' appears before last <PARAM>
 fn on_numeric(stream: &mut TcpStream, numeric: u16, line: &str) {
     let padded_numeric = format!("{:03}", numeric);
-    let parts: Vec<&str> = line.splitn(3, ':').collect();
-    if parts.len() >= 3 {
-        let message = parts[2].trim();
-        println!("Numeric({}): {}", padded_numeric, message);
+    let parts: Vec<&str> = line.split(' ').collect();
+    if parts.len() >= 2 {
+       // Uncomment this section if you wish to see numeric messages
+       /*let message_parts = &parts[3..];
+         let mut message = message_parts.join(" ");
+         message = message.trim_start_matches(':').to_string();
+         printall("white", &format!("Numeric({}): {}", padded_numeric, message));*/
     }
     match &padded_numeric[..] {
-        "001" => send(stream, &format!("JOIN {}",CHANNEL)),
+        "001" => {
+            /* Welcome to...  */ 
+            send(stream, &format!("JOIN {}",CHANNEL))
+        },
+        "002" => { /* Your host is... */ } ,
+        "003" => { /* This server was created... */ } ,
+        "004" => { /* Server type version... */ } ,
+        "005" => { /* Server Supported Info */ } ,
+        "251" => { /* There are _ users and _ invisible on _ servers. */ } ,
+        "252" => { /* _ :operator(s) online */ } ,
+        "253" => { /* _ :unknown ocnnections */ } ,
+        "254" => { /* _ :channels formed */ } ,
+        "255" => { /* I have _ clients and _ servers */ } ,
+        "265" => { /* Current local users: _ Max: _ */ } ,
+        "266" => { /* Current global users: _ Max: _ */ } ,
+        "332" => { /* Channel Topic */ } ,
+        "333" => { /* Channel Topic set by and timestamp */ } ,
+        "353" => { /* Channel /NAMES LIST */ } ,
+        "366" => { /* End of /NAMES LIST */ } ,
+        "375" => { /* START OF MOTD */ } ,
+        "372" => { /* MOTD */ } ,
+        "376" => { /* END OF MOTD */ } ,
         _ => {
-            // do nothing yet
+            // For more information on numerics: https://datatracker.ietf.org/doc/html/rfc2812
         }
     }
 }
@@ -97,7 +145,7 @@ fn on_join(_stream: &mut TcpStream, line: &str) {
 
     let channel = &parts[2][1..];
 
-    println!("{} has joined {}", sender, channel);
+    printall("green",&format!("{} has joined {}", sender, channel));
 }
 // :NICK!USER@ADDRESS PART :<CHANNEL>
 fn on_part(_stream: &mut TcpStream, line: &str) {
@@ -108,7 +156,7 @@ fn on_part(_stream: &mut TcpStream, line: &str) {
 
     let channel = &parts[2][1..];
 
-    println!("{} has left {}", sender, channel);
+    printall("green", &format!("{} has left {}", sender, channel));
 }
 // :NICK!USER@ADDRESS NICK :<NEWNICK>
 fn on_nick(_stream: &mut TcpStream, line: &str) {
@@ -119,7 +167,7 @@ fn on_nick(_stream: &mut TcpStream, line: &str) {
 
     let newnick = &parts[2][1..];
 
-    println!("{} has has changed their nick to: {}", sender, newnick);
+    printall("magenta", &format!("{} has has changed their nick to: {}", sender, newnick));
 }
 // :NICK!USER@ADDRESS PRIVMSG <NICKNAME|CHANNEL> :<MESSAGE>
 fn on_privmsg(_stream: &mut TcpStream, line: &str) {
@@ -135,9 +183,9 @@ fn on_privmsg(_stream: &mut TcpStream, line: &str) {
         message = message.trim_start_matches(':').to_string();
 
         if target == CHANNEL {
-            println!("{}: {}", sender, message);
+            printall("cyan", &format!("{}: {}", sender, message));
         } else {
-            println!("QUERY({}): {}", sender, message);
+            printall("blue", &format!("QUERY({}): {}", sender, message));
         }
     }
 }
@@ -152,7 +200,7 @@ fn on_quit(_stream: &mut TcpStream, line: &str) {
         let mut message = message_parts.join(" ");
         message = message.trim_start_matches(':').to_string();
 
-        println!("{} has quit: {}", sender, message);
+        printall("brightcyan", &format!("{} has quit: {}", sender, message));
     }
 }
 // :NICK!USER@ADDRESS NOTICE <NICKNAME|CHANNEL> :<MESSAGE>
@@ -169,16 +217,16 @@ fn on_notice(_stream: &mut TcpStream, line: &str) {
         message = message.trim_start_matches(':').to_string();
 
         if target == CHANNEL {
-            println!("CNOTICE({}): {}", sender, message);
+            printall("purple", &format!("CNOTICE({}): {}", sender, message));
         } else {
-            println!("PNOTICE({}): {}", sender, message);
+            printall("brightgreen", &format!("PNOTICE({}): {}", sender, message));
         }
     }
 }
 // :NICK!USER@ADDRESS MODE <CHANNEL|NICKNAME> <MODES> <PARAMS>
 // * If there are no params a colon will be appear before <MODES> otherwise a colon will appear before the last <PARAM> in the message 
 fn on_mode(_stream: &mut TcpStream, line: &str) {
-    println!("Mode change: {}", line);
+    printall("brightcyan", &format!("Mode change: {}", line));
 }
 // :NICK!USER@ADDRESS KICK <CHANNEL> <NICK> :<MESSAGE>
 fn on_kick(_stream: &mut TcpStream, line: &str) {
@@ -195,10 +243,10 @@ fn on_kick(_stream: &mut TcpStream, line: &str) {
         let mut message = message_parts.join(" ");
         message = message.trim_start_matches(':').to_string();
 
-        println!("{} has kicked {} from {} :{}", sender, target, channel, message);
+        printall("red", &format!("{} has kicked {} from {} :{}", sender, target, channel, message));
     }
 }
-
+// Other events that I haven't added support for yet: KILL, WALLOP, WHISPER
 fn on_other(_stream: &mut TcpStream, line: &str) {
-    println!("Other event: {}", line);
+    printall("white", &format!("Other event: {}", line));
 }
