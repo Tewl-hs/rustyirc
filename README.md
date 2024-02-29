@@ -1,1 +1,3 @@
-Very new to Rust most of my projects have been in C# so this is quite a leap for me. IRC has always been something I've enjoyed toying with so I thought this would be a good starting project.
+## RustyIRC - Simple IRC Bot written in Rust
+
+I am still learning rust. This was my first attempt at an application I might use in some fashion. Feel free to use, edit, comment, suggest, or help in any way.
