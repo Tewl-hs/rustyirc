@@ -1,16 +1,72 @@
+extern crate md5;
+
 use colored::*;
-use std::{error::Error, io};
+use std::{error::Error, io, fs, env};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use chrono::prelude::*;
+use serde::{Deserialize, Serialize};
+use regex::Regex;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct BuzzenConfig {
+    email: String,
+    password: String,
+    server: String,
+    channel: String,
+}
+
+impl BuzzenConfig {
+    // Read configuration from file
+    fn from_file(filename: &str) -> Result<Self, Box<dyn Error>> {
+        let current_dir = env::current_dir()?;
+        let config_path = current_dir.join(filename);
+
+        match fs::read_to_string(&config_path) {
+            Ok(contents) => {
+                let config: BuzzenConfig = serde_json::from_str(&contents)?;
+                Ok(config)
+            }
+            Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    // File doesn't exist, create a default configuration and write it to the file
+                    let default_config = BuzzenConfig {
+                        email: String::new(),
+                        password: String::new(),
+                        server: String::new(),
+                        channel: String::new(),
+                    };
+                    default_config.to_file(&config_path.into_os_string().into_string().unwrap())?;
+                    Ok(default_config)
+                } else {
+                    Err(Box::new(err))
+                }
+            }
+        }
+    }
+
+    // Write configuration to file
+    fn to_file(&self, filename: &str) -> Result<(), Box<dyn Error>> {
+        let json = serde_json::to_string_pretty(self)?;
+        fs::write(filename, json)?;
+        Ok(())
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let server = "irc.koach.com:6667";
-    let nickname = "rustytewl";
-    let mut client = IrcClient::connect(server).await?;
+    // Load settings from config.json
+    let config = BuzzenConfig::from_file("config.json")?;
 
-    client.write(&format!("NICK {}", nickname)).await?;
-    client.write(&format!("USER {} 0 * :rustbot",nickname)).await?;
+    let mut client = IrcClient::connect(&config.server, &config.channel).await?;
+
+    client.write("AUTHTYPE IRCXW1").await?;
+    client.write("CLIENTMODE cd1").await?;
+
+    let config = BuzzenConfig::from_file("config.json")?;
+
+    let passwd = md5::compute(config.password);
+
+    client.write(&format!("LOGINH {} {:?}", config.email, passwd)).await?;
 
     client.process_messages().await?;
 
@@ -45,17 +101,23 @@ struct IrcClient {
     message: String,
     nickname: String,
     address: String,
+    channel: String,
 }
 
 impl IrcClient {
-    pub async fn connect(server: &str) -> Result<Self, Box<dyn Error>> {
+    pub async fn connect(server: &str, channel: &str) -> Result<Self, Box<dyn Error>> {
         let stream = TcpStream::connect(server).await?;
-        Ok(IrcClient { stream, message: String::new(), nickname: String::new(), address: String::new() })
+        let channel = channel.to_string();
+        Ok(IrcClient { stream, message: String::new(), nickname: String::new(), address: String::new(),  channel })
     }
 
     pub async fn write(&mut self, data: &str) -> io::Result<usize> {
         if !data.starts_with("PONG") {
-            printall("white", &format!("<< {}", data))
+            if data.starts_with("LOGIN") {
+                printall("blue", "Attempting loging process...")
+            } else {
+                printall("white", &format!("<< {}", data))
+            }
         }
         self.stream.write(&format!("{}\n", data).as_bytes()).await
     }
@@ -82,7 +144,7 @@ impl IrcClient {
                     break;
                 }
                 // print each line in its unparsed form
-                // printall("white", &format!(">> {}", line));
+                 //printall("white", &format!(">> {}", line));
 
                 if line.starts_with("PING") {
                     let pong_msg = line.replace("PING", "PONG");
@@ -91,6 +153,11 @@ impl IrcClient {
                     let parts: Vec<&str> = line.split(' ').collect();
                     if parts.len() >= 2 {
                         match parts[1] {
+                            "AUTHUSER" => {
+                                // do nothing
+                                printall("red",">> AUTHUSER");
+                                break;
+                            }
                             "JOIN" => {
                                 let sender = parts[0].split('!').next().unwrap();
                                 let sender = &sender[1..];
@@ -146,13 +213,13 @@ impl IrcClient {
                                     let sender = parts[0].split('!').next().unwrap();
                                     let sender = &sender[1..];                                    
                                     let address = parts[0].split('!').nth(1).unwrap();                          
-                                    if target.starts_with("#") {
+                                    if target.starts_with('%') || target.starts_with('#') {
                                         self.on_channel_notice(sender, address, target, &msg).await?;
                                     } else {
                                         self.on_private_notice(sender, address, &msg).await?
                                     }
                                 } else {                                    
-                                    if target.starts_with("#") {
+                                    if target.starts_with('%') || target.starts_with('#') {
                                         self.on_channel_snotice(target, &msg).await?;
                                     } else {
                                         self.on_private_snotice(&msg).await?
@@ -168,25 +235,45 @@ impl IrcClient {
                                 let msg_parts = &parts[3..];
                                 let mut msg = msg_parts.join(" ");
                                 msg = msg.trim_start_matches(':').to_string();
-                                if target.starts_with("#") {
+                                if target.starts_with('%') || target.starts_with('#') {
                                     self.on_chanmode(sender, address, target, &msg).await?;
                                 } else {
                                     self.on_usermode(&msg).await?;
                                 }
                             },
-                            "PRIVMSG" => {
+                            "WHISPER" => {
+                                // :<NICK!USER@ADDRESS> WHISPER <CHANNEL> <TARGET> :<MESSAGE>
                                 let sender = parts[0].split('!').next().unwrap();
                                 let sender = &sender[1..];
                                 let address = parts[0].split('!').nth(1).unwrap();
                                 let target = parts[2];
-                                let msg_parts = &parts[3..];
+                                let msg_parts = &parts[4..];
                                 let mut msg = msg_parts.join(" ");
                                 msg = msg.trim_start_matches(':').to_string();                        
 
-                                if target.starts_with("#") {
-                                    self.on_privmsg(sender, address, target, &msg).await?;
-                                } else {
-                                    self.on_query(sender, address, &msg).await?;
+                                self.on_whisper(sender, address, target, &msg).await?;
+                            },
+                            "PRIVMSG" => {
+                                if parts[0].starts_with(":%") || parts[0].starts_with(":#") {
+                                    // Welcome message on buzzen is sent :%#Channelname PRIVMSG %#ChannelName :<WelcomeMessage>
+                                    let target = parts[2];
+                                    let msg_parts = &parts[3..];
+                                    let msg = msg_parts.join(" ");
+                                    self.on_welcome(target, &msg).await?;
+                                } else {   
+                                    let sender = parts[0].split('!').next().unwrap();
+                                    let sender = &sender[1..];
+                                    let address = parts[0].split('!').nth(1).unwrap_or("");
+                                    let target = parts[2];
+                                    let msg_parts = &parts[3..];
+                                    let mut msg = msg_parts.join(" ");
+                                    msg = msg.trim_start_matches(':').to_string();                        
+
+                                    if target.starts_with('%') || target.starts_with('#') {
+                                        self.on_privmsg(sender, address, target, &msg).await?;
+                                    } else {
+                                        self.on_query(sender, address, &msg).await?;
+                                    }
                                 }
                             },
                             _ => {
@@ -208,6 +295,21 @@ impl IrcClient {
                 self.message.replace_range(..pos + 1, "");
             }
         }
+    }
+
+
+    async fn on_welcome(&mut self, channel: &str, message: &str) -> io::Result<()> {
+        let message = &strip_style(&message);
+        let text = &format!(">> Welcome message for {} : {}", channel, message);
+        printall("brightgreen", text);
+        Ok(())
+    }
+
+    async fn on_whisper(&mut self, nick: &str, address: &str, channel: &str, message: &str) -> io::Result<()> {
+        let message = &strip_style(&message);
+        let text = &format!(">> Query from {} ({}) in {} : {}", nick, address, channel, message);
+        printall("blue", text);
+        Ok(())
     }
 
     async fn on_join(&mut self, nick: &str, address: &str, channel: &str) -> io::Result<()> {
@@ -239,13 +341,15 @@ impl IrcClient {
 
     // need to add support for actions and ctcp messages
     async fn on_privmsg(&mut self, nick: &str, _addr: &str, _channel: &str, msg: &str) -> io::Result<()> {
+        let msg = &strip_style(&msg);
         let text = &format!("{}: {}", nick, msg);
-        printall("cyan", text);
+        printall("cyan", &strip_style(&text));
         Ok(())
     }
 
     // need to add support for actions and ctcp messages
     async fn on_query(&mut self, nick: &str, _addr: &str, msg: &str) -> io::Result<()> {
+        let msg = &strip_style(&msg);
         let text = &format!(">> Query from {} : {}", nick, msg);
         printall("blue", text);
         Ok(())
@@ -271,6 +375,7 @@ impl IrcClient {
 
     // need to add support for ctcp messages
     async fn on_channel_notice(&mut self, nick: &str, address: &str, channel: &str, message: &str) -> io::Result<()> {
+        let message = &strip_style(&message);
         let text = &format!(">> Notice to {} from {} ({}): {}", channel, nick, address, message);
         printall("purple", text);
 
@@ -279,6 +384,7 @@ impl IrcClient {
 
     // need to add support for ctcp messages
     async fn on_private_notice(&mut self, nick: &str, address: &str, message: &str) -> io::Result<()> {
+        let message = &strip_style(&message);
         let text = &format!(">> Notice from {} ({}): {}", nick, address, message);
         printall("brightgreen", text);
         Ok(())
@@ -286,14 +392,16 @@ impl IrcClient {
 
     // need to add support for ctcp messages although it is not likely the server will make a ctcp message
     async fn on_channel_snotice(&mut self, channel: &str, message: &str) -> io::Result<()> {
-        let text = &format!(">> SNotice to {} : {}", channel, message);
-        printall("red", text);
+        let message = &strip_style(&message);
+        let text = &format!(">> Notice to {} : {}", channel, message);
+        printall("red", &text);
         Ok(())
     }
 
     // need to add support for ctcp messages although it is not likely the server will make a ctcp message
     async fn on_private_snotice(&mut self, message: &str) -> io::Result<()> {
-        let text = &format!(">> SNotice: {}", message);
+        let message = &strip_style(&message);
+        let text = &format!(">> Notice: {}", message);
         printall("red", text);
         Ok(())
     }
@@ -307,10 +415,10 @@ impl IrcClient {
                 /* Welcome to...  */ 
                 let parts: Vec<&str> = numeric_msg.split(' ').collect();
                 if parts.len() > 5 { 
-                    self.nickname = parts[6].split('!').next().unwrap().to_string();
-                    self.address = parts[6].split('!').nth(1).unwrap().to_string();
+                    self.nickname = parts[5].split('!').next().unwrap().to_string();
+                    self.address = parts[5].split('!').nth(1).unwrap().to_string();
                 }
-                self.write("JOIN #tewlzbox").await?;
+                self.write(&format!("JOIN {}",self.channel)).await?;
             },
             "002" => { /* Your host is... */ } ,
             "003" => { /* This server was created... */ } ,
@@ -342,4 +450,14 @@ impl IrcClient {
         printall("red", text);
         Ok(())
     }
+}
+
+fn strip_style(value: &str) -> String {
+    // strip Buzzen [style] tags
+    let style_regex = Regex::new(r"\[(?:/)?style(?:[^\]]+)?\]").unwrap();
+    let result = style_regex.replace_all(value, "");
+
+    // strip mIRC codes (underline, bold, color, ect...)
+    let special_regex = Regex::new(r"(\u{0003}(\d(\d)?(,(\d(\d)?)?)?)?|\u{001F}|\u{0002}|\u{000F}|\u{0016})").unwrap();
+    special_regex.replace_all(&result, "").to_string()
 }
