@@ -27,3 +27,4 @@
     + ChatGPT interactions with loadable response models
         - Speaking like a pirate or some other fun character models
         - Random generated user welcome messages
+    + Twitch Support
