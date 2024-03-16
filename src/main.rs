@@ -1,7 +1,8 @@
 extern crate md5;
 
 use colored::*;
-use std::{error::Error, io, fs, env};
+use std::{env, error::Error, fs};
+use std::io::{self, Write}; // Import io and Write trait
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use chrono::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use regex::Regex;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BuzzenConfig {
+    nickname: String,
     email: String,
     password: String,
     server: String,
@@ -30,6 +32,7 @@ impl BuzzenConfig {
                 if err.kind() == std::io::ErrorKind::NotFound {
                     // File doesn't exist, create a default configuration and write it to the file
                     let default_config = BuzzenConfig {
+                        nickname: String::new(),
                         email: String::new(),
                         password: String::new(),
                         server: String::new(),
@@ -51,7 +54,10 @@ impl BuzzenConfig {
         Ok(())
     }
 }
-
+// irc.chat.twitch.tv
+//  "CAP REQ :twitch.tv/membership twitch.tv/tags twitch.tv/commands";
+// ("PASS oauth:{}", config.accessToken);
+// ("NICK {}", config.nickname);
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Load settings from config.json
@@ -59,39 +65,79 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut client = IrcClient::connect(&config.server, &config.channel).await?;
 
-    client.write("AUTHTYPE IRCXW1").await?;
-    client.write("CLIENTMODE cd1").await?;
+    printall("alert", "Connected! Starting authentication process...");
+    client.write("AUTHTYPE ircwx1").await?;
 
     let config = BuzzenConfig::from_file("config.json")?;
 
     let passwd = md5::compute(config.password);
 
     client.write(&format!("LOGINH {} {:?}", config.email, passwd)).await?;
+    client.write(&format!("USER {} * 0 :RustBot", config.nickname)).await?;
+    client.write("CLIENTMODE cd1").await?;
 
-    client.process_messages().await?;
+    let terminal = tokio::spawn(async move {
+        loop {
+            let mut input = String::new();
+            std::io::stdout().flush().expect("Failed to flush stdout");
+            std::io::stdin().read_line(&mut input).expect("Failed to read line");
+            
+            // Send the user input as a PRIVMSG to the IRC server
+            println!("Input: {}", input);
+        }
+    });
+
+    let server = tokio::spawn(async move {
+        let _ = client.process_messages().await;
+    });
+
+    tokio::try_join!(terminal, server)?;
 
     Ok(())
 }
 
-fn printall(clr: &str, text: &str) {
+fn printall(event: &str, text: &str) {
     let now = Local::now();
     let timestamp = now.format("[%H:%M:%S]").to_string();
-    match clr {
-        "yellow" => println!("{} {}", timestamp, text.yellow()),
-        "red" => println!("{} {}", timestamp, text.red()),
-        "green" => println!("{} {}", timestamp, text.green()),
-        "purple" => println!("{} {}", timestamp, text.purple()),
-        "blue" => println!("{} {}", timestamp, text.blue()),
-        "cyan" => println!("{} {}", timestamp, text.cyan()),
-        "magenta" => println!("{} {}", timestamp, text.magenta()),
-        "brightblue" => println!("{} {}", timestamp, text.bright_blue()),
-        "brightgreen" => println!("{} {}", timestamp, text.bright_green()),
-        "brightred" => println!("{} {}", timestamp, text.bright_red()),
-        "brightcyan" => println!("{} {}", timestamp, text.bright_cyan()),
-        "grey" => {
+    match event {
+        "away" => {     
+            let blueish = CustomColor::new(50, 109, 168);
+            println!("{} {}", timestamp, text.custom_color(blueish));
+        },
+        "unaway" => {     
+            let blueish = CustomColor::new(50, 109, 168);
+            println!("{} {}", timestamp, text.custom_color(blueish));
+        },
+        "alert" => println!("{} {}", timestamp, text.yellow()),
+        "alert_blue" => println!("{} {}", timestamp, text.bright_blue()),
+        "sctcp" => {            
+            let reddish = CustomColor::new(209, 82, 109);
+            println!("{} {}", timestamp, text.custom_color(reddish));
+        },
+        "ctcpreply" => {            
+            let orange = CustomColor::new(255, 165, 0);
+            println!("{} {}", timestamp, text.custom_color(orange));
+        },
+        "ctcprequest" => {            
+            let orange = CustomColor::new(255, 165, 0);
+            println!("{} {}", timestamp, text.custom_color(orange));
+        },
+        "snotice" => println!("{} {}", timestamp, text.bright_red()),
+        "join" => println!("{} {}", timestamp, text.green()),
+        "part" => println!("{} {}", timestamp, text.green()),
+        "welcome" => println!("{} {}", timestamp, text.bright_green()),
+        "quit" => println!("{} {}", timestamp, text.green()),
+        "kick" => println!("{} {}", timestamp, text.red()),
+        "notice" => println!("{} {}", timestamp, text.bright_magenta()),
+        "nick" => println!("{} {}", timestamp, text.bright_blue()),
+        "numeric" => {
             let grey = CustomColor::new(128, 128, 128);
             println!("{} {}", timestamp, text.custom_color(grey));
         },
+        "mode" => println!("{} {}", timestamp, text.cyan()),
+        "privmsg" => println!("{} {}", timestamp, text.bright_white()),
+        "query" => println!("{} {}", timestamp, text.white()),
+        "action" => println!("{} {}", timestamp, text.italic().purple()),
         _ => println!("{} {}", timestamp, text)
     }
 }
@@ -114,9 +160,9 @@ impl IrcClient {
     pub async fn write(&mut self, data: &str) -> io::Result<usize> {
         if !data.starts_with("PONG") {
             if data.starts_with("LOGIN") {
-                printall("blue", "Attempting loging process...")
+                printall("default", "<< LOGINH ********** ***********")
             } else {
-                printall("white", &format!("<< {}", data))
+                printall("default", &format!("<< {}", data))
             }
         }
         self.stream.write(&format!("{}\n", data).as_bytes()).await
@@ -144,7 +190,7 @@ impl IrcClient {
                     break;
                 }
                 // print each line in its unparsed form
-                 //printall("white", &format!(">> {}", line));
+                 //printall("default", &format!(">> {}", line));
 
                 if line.starts_with("PING") {
                     let pong_msg = line.replace("PING", "PONG");
@@ -153,24 +199,26 @@ impl IrcClient {
                     let parts: Vec<&str> = line.split(' ').collect();
                     if parts.len() >= 2 {
                         match parts[1] {
-                            "AUTHUSER" => {
-                                // do nothing
-                                printall("red",">> AUTHUSER");
-                                break;
-                            }
                             "JOIN" => {
                                 let sender = parts[0].split('!').next().unwrap();
                                 let sender = &sender[1..];
                                 let address = parts[0].split('!').nth(1).unwrap();
-                                let channel = &parts[2][1..];
-    
-                                self.on_join(sender, address, channel).await?;
+                                // because buzzen is weird registered account join
+                                if parts[2].starts_with(':') {
+                                    // :<NICK!USER@ADDRESS> JOIN <PROFILE_DATA> :<CHANNEL>
+                                    let channel = &parts[2][1..];    
+                                    self.on_join(sender, address, channel).await?;
+                                } else { // guest join
+                                    // :<NICK!USER@ADDRESS> JOIN :<CHANNEL>
+                                    let channel = &parts[3][1..];    
+                                    self.on_join(sender, address, channel).await?;
+                                }
                             },
-                            "PART" => {
+                            "PART" => { // :<NICK!USER@ADDRESS> PART <CHANNEL>
                                 let sender = parts[0].split('!').next().unwrap();
                                 let sender = &sender[1..];
                                 let address = parts[0].split('!').nth(1).unwrap();
-                                let channel = &parts[2][1..];
+                                let channel = &parts[2];
     
                                 self.on_part(sender, address, channel).await?;
                             },
@@ -180,7 +228,8 @@ impl IrcClient {
                                 let address = parts[0].split('!').nth(1).unwrap();
                                 let msg_parts = &parts[2..];
                                 let mut msg = msg_parts.join(" ");
-                                msg = msg.trim_start_matches(':').to_string();
+                                msg.remove(0);
+                                let msg = trim_trailing_whitespace(&msg);   
     
                                 self.on_quit(sender, address, &msg).await?;
                             },
@@ -200,25 +249,35 @@ impl IrcClient {
                                 let target = parts[3];
                                 let msg_parts = &parts[4..];
                                 let mut msg = msg_parts.join(" ");
-                                msg = msg.trim_start_matches(':').to_string();
+                                msg.remove(0);
+                                let msg = trim_trailing_whitespace(&msg);   
                                 self.on_kick(sender, address, target, channel, &msg).await?;
                             },
                             "NOTICE" => {
                                 let target = parts[2];
-                                let msg_parts = &parts[3..];
-                                let mut msg = msg_parts.join(" ");
-                                msg = msg.trim_start_matches(':').to_string();
 
                                 if parts[0].contains('!') {                                    
                                     let sender = parts[0].split('!').next().unwrap();
                                     let sender = &sender[1..];                                    
                                     let address = parts[0].split('!').nth(1).unwrap();                          
-                                    if target.starts_with('%') || target.starts_with('#') {
+                                    if parts[3].starts_with(':') {                                        
+                                        let msg_parts = &parts[3..];
+                                        let mut msg = msg_parts.join(" ");
+                                        msg.remove(0);
                                         self.on_channel_notice(sender, address, target, &msg).await?;
-                                    } else {
+                                    } else { // because buzzen is weird
+                                        // :<NICK!USER@ADDRESS> NOTICE <CHANNEL> <NICKNAME> :<MESSAGE>
+                                        let msg_parts = &parts[4..];
+                                        let mut msg = msg_parts.join(" ");
+                                        msg.remove(0);
+                                        let msg = trim_trailing_whitespace(&msg);   
                                         self.on_private_notice(sender, address, &msg).await?
                                     }
-                                } else {                                    
+                                } else {     
+                                    let msg_parts = &parts[3..];
+                                    let mut msg = msg_parts.join(" ");
+                                    msg.remove(0);                  
+                                    let msg = trim_trailing_whitespace(&msg);                
                                     if target.starts_with('%') || target.starts_with('#') {
                                         self.on_channel_snotice(target, &msg).await?;
                                     } else {
@@ -234,7 +293,8 @@ impl IrcClient {
                                 let target = parts[2];
                                 let msg_parts = &parts[3..];
                                 let mut msg = msg_parts.join(" ");
-                                msg = msg.trim_start_matches(':').to_string();
+                                msg.remove(0);
+                                let msg = trim_trailing_whitespace(&msg);   
                                 if target.starts_with('%') || target.starts_with('#') {
                                     self.on_chanmode(sender, address, target, &msg).await?;
                                 } else {
@@ -249,7 +309,8 @@ impl IrcClient {
                                 let target = parts[2];
                                 let msg_parts = &parts[4..];
                                 let mut msg = msg_parts.join(" ");
-                                msg = msg.trim_start_matches(':').to_string();                        
+                                msg.remove(0);  
+                                let msg = trim_trailing_whitespace(&msg);                     
 
                                 self.on_whisper(sender, address, target, &msg).await?;
                             },
@@ -258,20 +319,29 @@ impl IrcClient {
                                     // Welcome message on buzzen is sent :%#Channelname PRIVMSG %#ChannelName :<WelcomeMessage>
                                     let target = parts[2];
                                     let msg_parts = &parts[3..];
-                                    let msg = msg_parts.join(" ");
+                                    let mut msg = msg_parts.join(" ");
+                                    msg.remove(0);
+                                    let msg = trim_trailing_whitespace(&msg);   
                                     self.on_welcome(target, &msg).await?;
                                 } else {   
                                     let sender = parts[0].split('!').next().unwrap();
                                     let sender = &sender[1..];
                                     let address = parts[0].split('!').nth(1).unwrap_or("");
-                                    let target = parts[2];
-                                    let msg_parts = &parts[3..];
-                                    let mut msg = msg_parts.join(" ");
-                                    msg = msg.trim_start_matches(':').to_string();                        
+                                    let target = parts[2];     
 
-                                    if target.starts_with('%') || target.starts_with('#') {
+                                    //:<NICK!USER@ADDRESS> PRIVMSG <CHANNEL> :<MESSAGE> 
+                                    if parts[3].starts_with(':') {
+                                        let msg_parts = &parts[3..];
+                                        let mut msg = msg_parts.join(" ");
+                                        msg.remove(0);   
+                                        let msg = trim_trailing_whitespace(&msg);                
                                         self.on_privmsg(sender, address, target, &msg).await?;
-                                    } else {
+                                    } else { // because buzzen is weird
+                                        // :<NICK!USER@ADDRESS> PRIVMSG <CHANNEL> <NAME> :<MESSAGE> 
+                                        let msg_parts = &parts[4..];
+                                        let mut msg = msg_parts.join(" ");
+                                        msg.remove(0);    
+                                        let msg = trim_trailing_whitespace(&msg);            
                                         self.on_query(sender, address, &msg).await?;
                                     }
                                 }
@@ -279,11 +349,8 @@ impl IrcClient {
                             _ => {
                                 if let Ok(numeric) = parts[1].parse::<u16>() {
                                     let padded_numeric = format!("{:03}", numeric);
-                                    let message_parts = &parts[3..];
-                                    let mut numeric_msg = message_parts.join(" ");
-                                    numeric_msg = numeric_msg.trim_start_matches(':').to_string();
 
-                                    self.on_numeric(&padded_numeric, &numeric_msg).await?;                                    
+                                    self.on_numeric(&padded_numeric, &line).await?;                                    
                                 } else {
                                     self.on_unsupported(&line).await?;
                                 }
@@ -301,32 +368,32 @@ impl IrcClient {
     async fn on_welcome(&mut self, channel: &str, message: &str) -> io::Result<()> {
         let message = &strip_style(&message);
         let text = &format!(">> Welcome message for {} : {}", channel, message);
-        printall("brightgreen", text);
+        printall("welcome", text);
         Ok(())
     }
 
     async fn on_whisper(&mut self, nick: &str, address: &str, channel: &str, message: &str) -> io::Result<()> {
         let message = &strip_style(&message);
         let text = &format!(">> Query from {} ({}) in {} : {}", nick, address, channel, message);
-        printall("blue", text);
+        printall("whisper", text);
         Ok(())
     }
 
     async fn on_join(&mut self, nick: &str, address: &str, channel: &str) -> io::Result<()> {
         let text = &format!(">> Join: {} ({}) has joined {}", nick, address, channel);
-        printall("green", text);
+        printall("join", text);
         Ok(())
     }
 
     async fn on_part(&mut self, nick: &str, address: &str, channel: &str) -> io::Result<()> {
         let text =  &format!(">> Part: {} ({}) has left {}", nick, address, channel);
-        printall("green", text);
+        printall("part", text);
         Ok(())
     }
 
     async fn on_quit(&mut self, nick: &str, address: &str, reason: &str) -> io::Result<()> {
         let text = &format!(">> Quit: {} ({}) has left the server. ({})", nick, address, reason);
-        printall("brightcyan", text);
+        printall("quit", text);
         Ok(())
     }
 
@@ -335,84 +402,226 @@ impl IrcClient {
             self.nickname = newnick.to_string();
         }
         let text = &format!(">> Nick: {} ({}) has changed their nick to: {}", nick, address, newnick);
-        printall("magenta", text);
+        printall("nick", text);
         Ok(())
     }
 
     // need to add support for actions and ctcp messages
-    async fn on_privmsg(&mut self, nick: &str, _addr: &str, _channel: &str, msg: &str) -> io::Result<()> {
-        let msg = &strip_style(&msg);
-        let text = &format!("{}: {}", nick, msg);
-        printall("cyan", &strip_style(&text));
+    async fn on_privmsg(&mut self, nick: &str, address: &str, channel: &str, message: &str) -> io::Result<()> {
+        let message = &strip_style(&message);
+        if message.starts_with('\u{0001}') && message.ends_with('\u{0001}') && message.len() > 1 {
+            let message = message.replace('\u{0001}', "");
+            let parts: Vec<&str> = message.split(' ').collect();
+            if parts[0].to_uppercase() == "ACTION" {
+                let action_message: String;
+                if parts.len() > 1 {
+                    action_message = parts[1..].join(" ");
+                } else {
+                    action_message = String::new(); // handle possible blank action
+                }
+                self.on_action(nick, address, channel, &action_message).await?
+            } else {
+                // CTCP Request
+                self.on_ctcp_request(nick, address, &message).await?
+            }            
+        } else {
+            // because buzzen is weird 
+            if message.starts_with('\u{0002}') && message.ends_with('\u{0002}') && message.len() > 1 {
+                let message = &message[1..message.len() - 1];
+                let parts: Vec<&str> = message.split(' ').collect();
+                let ctcp_type = parts[0].to_uppercase();
+                if parts.len() > 1 {
+                    let ctcp_reply = parts[1..].join(" ");
+                    self.on_ctcp_reply(nick, address, &ctcp_type, &ctcp_reply).await?
+                } else {
+                    self.on_ctcp_request(nick, address, &ctcp_type).await?
+                }
+            } else {
+                let text = &format!("{}: {}", nick, message);
+                printall("privmsg", &text);
+            }
+        }
         Ok(())
+    }
+
+    async fn on_action(&mut self, nick: &str, _addrress: &str, _channel: &str, message: &str) -> io::Result<()> {
+        let text = &format!("{} {}", nick, message);
+        printall("action", text);
+        Ok(())     
     }
 
     // need to add support for actions and ctcp messages
-    async fn on_query(&mut self, nick: &str, _addr: &str, msg: &str) -> io::Result<()> {
-        let msg = &strip_style(&msg);
-        let text = &format!(">> Query from {} : {}", nick, msg);
-        printall("blue", text);
+    async fn on_query(&mut self, nick: &str, address: &str, message: &str) -> io::Result<()> {
+        let message = &strip_style(&message);
+        if message.starts_with('\u{0001}') && message.ends_with('\u{0001}') && message.len() > 1 {
+            let message = &message[1..message.len() - 1];
+            let parts: Vec<&str> = message.split(' ').collect();
+            if parts[0].to_uppercase() == "ACTION" {
+                let action_message: String;
+                if parts.len() > 1 {
+                    action_message = parts[1..].join(" ");
+                } else {
+                    action_message = String::new(); // handle possible blank action
+                }
+                self.on_query_action(nick, address,  &action_message).await?
+            } else {
+                // CTCP Request
+                self.on_ctcp_request(nick, address, message).await?
+            }
+        } else {
+            // because buzzen is weird
+            if message.starts_with('\u{0002}') && message.ends_with('\u{0002}') && message.len() > 1 {
+                let message = &message[1..message.len() - 1];
+                let parts: Vec<&str> = message.split(' ').collect();
+                let ctcp_type = parts[0].to_uppercase();
+                if parts.len() > 1 {
+                    let ctcp_reply = parts[1..].join(" ");
+                    self.on_ctcp_reply(nick, address, &ctcp_type, &ctcp_reply).await?
+                } else {
+                    self.on_ctcp_request(nick, address, &ctcp_type).await?
+                }
+            } else {
+                let text = &format!("{}: {}", nick, message);
+                printall("privmsg", &text);
+            }
+        }
         Ok(())
     }
 
-    async fn on_chanmode(&mut self, nick: &str, _addr: &str, channel: &str, modes: &str) -> io::Result<()> {
+    // not going to bother adding channel specific ctcp requests since the bot only sits in 1 channel 
+    async fn on_ctcp_request(&mut self, nick: &str, address: &str, request: &str) -> io::Result<()> {
+        let text = &format!(">> CTCP {} Request from {} ({})", request, nick, address);
+        printall("ctcprequest", text);
+        Ok(())
+    }
+
+    async fn on_query_action(&mut self, nick: &str, _address: &str, message: &str) -> io::Result<()> {
+        let message = &strip_style(&message);
+        let text = &format!(">> Query from {} : {}", nick, message);
+        printall("action", text);
+        Ok(())
+    }
+
+    async fn on_chanmode(&mut self, nick: &str, _address: &str, channel: &str, modes: &str) -> io::Result<()> {
         let text = &format!(">> Mode: {} sets modes in {} to {}", nick, channel, modes);
-        printall("bightcyan", text);
+        printall("mode", text);
         Ok(())
     }
 
     async fn on_usermode(&mut self, modes: &str) -> io::Result<()> {
         let text = &format!(">> Usermode: {}", modes);
-        printall("grey", text);
+        printall("usermode", text);
         Ok(())
     }
 
     async fn on_kick(&mut self, nick: &str, address: &str, knick: &str, channel:&str, reason: &str) -> io::Result<()> {
         let text = &format!(">> Kick: {} ({}) has kicked {} from {} : {}", nick, address, knick, channel, reason);
-        printall("red", text);
+        printall("kick", text);
         Ok(())
     }
 
-    // need to add support for ctcp messages
     async fn on_channel_notice(&mut self, nick: &str, address: &str, channel: &str, message: &str) -> io::Result<()> {
         let message = &strip_style(&message);
-        let text = &format!(">> Notice to {} from {} ({}): {}", channel, nick, address, message);
-        printall("purple", text);
+        if message.starts_with('\u{0001}') && message.ends_with('\u{0001}') && message.len() > 1 {
+            let msg = &message[1..message.len() - 1];
+            let parts: Vec<&str> = msg.split(' ').collect();
+            let ctcp_type = parts[0];
+            if parts.len() == 1 {
+                self.on_ctcp_reply(nick, address, ctcp_type, "").await?
+            } else {
+                let ctcp_reply = parts[1..].join(" ");                
+                self.on_ctcp_reply(nick, address, ctcp_type, &ctcp_reply).await?
+            }
+        } else {
+            let text = &format!(">> Notice to {} from {} ({}): {}", channel, nick, address, message);
+            printall("notice", text);
+        }
+        Ok(())
+    }
 
+    async fn on_ctcp_reply(&mut self, nick: &str, address: &str, ctcp_type: &str, ctcp_reply: &str) -> io::Result<()> {
+        let text = &format!(">> CTCP {} Reply from {} ({}) : {}", ctcp_type, nick, address, ctcp_reply);
+        printall("ctcpreply", text);
         Ok(())
     }
 
     // need to add support for ctcp messages
     async fn on_private_notice(&mut self, nick: &str, address: &str, message: &str) -> io::Result<()> {
         let message = &strip_style(&message);
-        let text = &format!(">> Notice from {} ({}): {}", nick, address, message);
-        printall("brightgreen", text);
+        if message.starts_with('\u{0001}') && message.ends_with('\u{0001}') && message.len() > 1 {
+            let msg = &message[1..message.len() - 1];
+            let parts: Vec<&str> = msg.split(' ').collect();
+            let ctcp_type = parts[0];
+            if parts.len() == 1 {
+                self.on_ctcp_reply(nick, address, ctcp_type, "").await?
+            } else {
+                let ctcp_reply = parts[1..].join(" ");                
+                self.on_ctcp_reply(nick, address, ctcp_type, &ctcp_reply).await?
+            }
+        } else {
+            let text = &format!(">> Notice from {} ({}): {}", nick, address, message);
+            printall("notice", text);
+        }
         Ok(())
     }
 
-    // need to add support for ctcp messages although it is not likely the server will make a ctcp message
     async fn on_channel_snotice(&mut self, channel: &str, message: &str) -> io::Result<()> {
         let message = &strip_style(&message);
-        let text = &format!(">> Notice to {} : {}", channel, message);
-        printall("red", &text);
+        if message.starts_with('\u{0001}') && message.ends_with('\u{0001}') && message.len() > 1 {
+            let msg = &message[1..message.len() - 1];
+            let parts: Vec<&str> = msg.split(' ').collect();
+            let ctcp_type = parts[0];
+            if parts.len() == 1 {
+                self.on_server_ctcp(ctcp_type, "").await?
+            } else {
+                let ctcp_reply = parts[1..].join(" ");                
+                self.on_server_ctcp(ctcp_type, &ctcp_reply).await?
+            }
+        } else {
+            let text = &format!(">> Notice to {} : {}", channel, message);
+            printall("snotice", &text);
+        }
         Ok(())
     }
 
-    // need to add support for ctcp messages although it is not likely the server will make a ctcp message
     async fn on_private_snotice(&mut self, message: &str) -> io::Result<()> {
         let message = &strip_style(&message);
-        let text = &format!(">> Notice: {}", message);
-        printall("red", text);
+        if message.starts_with('\u{0001}') && message.ends_with('\u{0001}') && message.len() > 1 {
+            let msg = &message[1..message.len() - 1];
+            let parts: Vec<&str> = msg.split(' ').collect();
+            let ctcp_type = parts[0];
+            if parts.len() == 1 {
+                self.on_server_ctcp(ctcp_type, "").await?
+            } else {
+                let ctcp_reply = parts[1..].join(" ");                
+                self.on_server_ctcp(ctcp_type, &ctcp_reply).await?
+            }
+        } else {
+            let text = &format!(">> Notice: {}", message);
+            printall("snotice", text);
+        }
         Ok(())
     }
 
-    async fn on_numeric(&mut self, numeric: &str, numeric_msg: &str) -> io::Result<()> {
+    async fn on_server_ctcp(&mut self, ctcp_type: &str, ctcp_reply: &str) -> io::Result<()> {
+        let text = &format!(">> CTCP {} from Server: {}", ctcp_type, ctcp_reply);
+        printall("sctcp", text);
+        Ok(())
+    }
+
+    async fn on_numeric(&mut self, numeric: &str, line: &str) -> io::Result<()> {
         // for now print all numerics and their messages
+        let parts: Vec<&str> = line.split(' ').collect();
+        let message_parts = &parts[3..];
+        let mut numeric_msg = message_parts.join(" ");
+        if numeric_msg.starts_with(':') {
+            numeric_msg.remove(0);
+        }
         let text = &format!(">> Numeric({}): {}", numeric, numeric_msg);
-        printall("grey", text);
         match &numeric[..] {
             "001" => {
                 /* Welcome to...  */ 
+                printall("numeric", text);
                 let parts: Vec<&str> = numeric_msg.split(' ').collect();
                 if parts.len() > 5 { 
                     self.nickname = parts[5].split('!').next().unwrap().to_string();
@@ -420,6 +629,7 @@ impl IrcClient {
                 }
                 self.write(&format!("JOIN {}",self.channel)).await?;
             },
+            /* 
             "002" => { /* Your host is... */ } ,
             "003" => { /* This server was created... */ } ,
             "004" => { /* Server type version... */ } ,
@@ -438,16 +648,37 @@ impl IrcClient {
             "375" => { /* START OF MOTD */ } ,
             "372" => { /* MOTD */ } ,
             "376" => { /* END OF MOTD */ } ,
+            */
+            "821" => { /* :UNAWAY MESSAGE */
+                // :<NICK!USER@ADDRESS> 821 <CHANNEL> :<MESSAGE>
+                let sender = parts[0].split('!').next().unwrap();
+                let sender = &sender[1..];
+                let message = &strip_style(&numeric_msg);
+                let message = trim_trailing_whitespace(&message);
+                // let address = parts[0].split('!').nth(1).unwrap();
+                let text = format!(">> Back: {} has returned! ({})", sender, message);
+                printall("unaway", &text)
+            },
+            "822" => { /* :AWAY MESSAGE */
+                // :<NICK!USER@ADDRESS> 822 <CHANNEL> :<MESSAGE>
+                let sender = parts[0].split('!').next().unwrap();
+                let sender = &sender[1..];
+                let message = &strip_style(&numeric_msg);
+                let message = trim_trailing_whitespace(&message);
+                let text = format!(">> Away: {} has gone away. ({})", sender, message);
+                printall("away", &text)
+            },
             _ => {
                 // For more information on numerics: https://datatracker.ietf.org/doc/html/rfc2812
+                printall("numeric", text);
             }
         }
         Ok(())
-    }
+    } 
 
     async fn on_unsupported(&mut self, line: &str) -> io::Result<()> {
         let text = &format!("Unsupported event: {}", line); // print anything i have not added/forgot
-        printall("red", text);
+        printall("default", text);
         Ok(())
     }
 }
@@ -460,4 +691,14 @@ fn strip_style(value: &str) -> String {
     // strip mIRC codes (underline, bold, color, ect...)
     let special_regex = Regex::new(r"(\u{0003}(\d(\d)?(,(\d(\d)?)?)?)?|\u{001F}|\u{0002}|\u{000F}|\u{0016})").unwrap();
     special_regex.replace_all(&result, "").to_string()
+}
+
+fn trim_trailing_whitespace(input: &str) -> String {
+    input.chars()
+        .rev() // Start from the end of the string
+        .skip_while(|&c| c.is_whitespace()) // Skip whitespaces
+        .collect::<String>() // Collect the characters into a string
+        .chars() // Reversed, so reverse it again to get original order
+        .rev()
+        .collect::<String>() // Collect the characters into a string
 }
