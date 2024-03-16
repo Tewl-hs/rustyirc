@@ -1,5 +1,3 @@
-extern crate md5;
-
 use colored::*;
 use std::{env, error::Error, fs};
 use std::io::{self, Write}; // Import io and Write trait
