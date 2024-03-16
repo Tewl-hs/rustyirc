@@ -1,5 +1,3 @@
-extern crate md5;
-
 use colored::*;
 use std::{error::Error, io, fs, env};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
